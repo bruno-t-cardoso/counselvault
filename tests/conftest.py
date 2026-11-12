@@ -47,3 +47,20 @@ def api():
         return client
 
     return as_attorney
+
+
+@pytest.fixture(scope="session", autouse=True)
+def versioned_bucket():
+    """Create the test bucket with versioning on, as production would have it."""
+    from django.conf import settings
+
+    from vault import storage
+
+    s3 = storage.client()
+    try:
+        s3.create_bucket(Bucket=settings.S3_BUCKET)
+    except s3.exceptions.BucketAlreadyOwnedByYou:
+        pass
+    s3.put_bucket_versioning(
+        Bucket=settings.S3_BUCKET, VersioningConfiguration={"Status": "Enabled"}
+    )

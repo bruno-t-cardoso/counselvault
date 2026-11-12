@@ -119,3 +119,64 @@ class Document(models.Model):
                 fields=["firm", "matter", "-created_at"], name="doc_firm_matter_created"
             ),
         ]
+
+
+class DocumentVersion(models.Model):
+    """One uploaded file, pinned to an immutable S3 object version."""
+
+    firm = models.ForeignKey(Firm, on_delete=models.CASCADE)
+    document = models.ForeignKey(Document, on_delete=models.CASCADE, related_name="versions")
+    number = models.PositiveIntegerField()
+    s3_key = models.CharField(max_length=500)
+    s3_version_id = models.CharField(max_length=200)
+    size_bytes = models.BigIntegerField()
+    uploaded_by = models.ForeignKey(Attorney, on_delete=models.PROTECT)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    objects = TenantManager()
+    unscoped = models.Manager()
+
+    class Meta:
+        default_manager_name = "objects"
+        ordering = ["number"]
+        constraints = [
+            models.UniqueConstraint(fields=["document", "number"], name="version_number_once"),
+            models.UniqueConstraint(
+                fields=["document", "s3_version_id"], name="s3_version_recorded_once"
+            ),
+        ]
+
+
+class AuditLogQuerySet(models.QuerySet):
+    def visible_to(self, attorney):
+        return self.exclude(document__matter__blocks__attorney=attorney)
+
+
+class AuditLog(models.Model):
+    """Append-only record of who touched which document.
+
+    Database triggers (migration 0004) reject UPDATE, DELETE and TRUNCATE.
+    Foreign keys use PROTECT so related rows cannot be deleted out from under it.
+    """
+
+    class Action(models.TextChoices):
+        DOCUMENT_CREATED = "document_created"
+        UPLOAD_URL_ISSUED = "upload_url_issued"
+        VERSION_RECORDED = "version_recorded"
+        DOWNLOAD_URL_ISSUED = "download_url_issued"
+
+    firm = models.ForeignKey(Firm, on_delete=models.PROTECT)
+    actor = models.ForeignKey(Attorney, on_delete=models.PROTECT)
+    action = models.CharField(max_length=40, choices=Action.choices)
+    document = models.ForeignKey(Document, on_delete=models.PROTECT)
+    metadata = models.JSONField(default=dict)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    objects = TenantManager.from_queryset(AuditLogQuerySet)()
+    unscoped = models.Manager()
+
+    class Meta:
+        default_manager_name = "objects"
+        indexes = [
+            models.Index(fields=["firm", "document", "-created_at"], name="audit_firm_doc_created"),
+        ]

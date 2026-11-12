@@ -1,6 +1,6 @@
 from rest_framework import serializers
 
-from .models import Document, Matter
+from .models import AuditLog, Document, DocumentVersion, Matter
 
 
 class MatterSerializer(serializers.ModelSerializer):
@@ -26,3 +26,19 @@ class DocumentSerializer(serializers.ModelSerializer):
                 f'Invalid pk "{matter.pk}" - object does not exist.'
             )
         return matter
+
+
+class DocumentVersionSerializer(serializers.ModelSerializer):
+    uploaded_by = serializers.CharField(source="uploaded_by.user.username", read_only=True)
+
+    class Meta:
+        model = DocumentVersion
+        fields = ["number", "size_bytes", "uploaded_by", "created_at"]
+
+
+class AuditLogSerializer(serializers.ModelSerializer):
+    actor = serializers.CharField(source="actor.user.username", read_only=True)
+
+    class Meta:
+        model = AuditLog
+        fields = ["id", "actor", "action", "document", "metadata", "created_at"]

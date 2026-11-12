@@ -1,0 +1,103 @@
+"""The audit trail: what gets recorded, who can read it, and that it cannot be altered."""
+import urllib.request
+
+import pytest
+from django.db import DatabaseError, connection, transaction
+
+from vault.models import AuditLog, MatterBlock
+from vault.tenancy import tenant_context
+
+
+def _actions(firm):
+    with tenant_context(firm.id):
+        return list(AuditLog.objects.order_by("id").values_list("action", flat=True))
+
+
+def _full_cycle(client, document):
+    url = client.post(f"/api/documents/{document.pk}/upload-url/").json()["url"]
+    urllib.request.urlopen(
+        urllib.request.Request(
+            url, data=b"file", method="PUT", headers={"Content-Type": "application/octet-stream"}
+        )
+    )
+    client.post(f"/api/documents/{document.pk}/versions/")
+    client.post(f"/api/documents/{document.pk}/download-url/")
+
+
+def test_file_lifecycle_is_audited_in_order(api, firm_a):
+    _full_cycle(api(firm_a.attorney), firm_a.document)
+    assert _actions(firm_a.firm) == ["upload_url_issued", "version_recorded", "download_url_issued"]
+    with tenant_context(firm_a.firm.id):
+        entry = AuditLog.objects.get(action="download_url_issued")
+        assert entry.actor == firm_a.attorney
+        assert entry.document == firm_a.document
+        assert entry.metadata == {"version": 1}
+
+
+def test_creating_a_document_is_audited(api, firm_a):
+    response = api(firm_a.attorney).post(
+        "/api/documents/", {"matter": str(firm_a.matter.pk), "title": "brief"}, format="json"
+    )
+    assert response.status_code == 201
+    assert _actions(firm_a.firm) == ["document_created"]
+
+
+def test_refused_requests_leave_no_audit_rows(api, firm_a, firm_b):
+    api(firm_b.attorney).post(f"/api/documents/{firm_a.document.pk}/upload-url/")
+    api(firm_a.attorney).post(f"/api/documents/{firm_a.document.pk}/versions/")  # nothing uploaded
+    assert _actions(firm_a.firm) == []
+    assert _actions(firm_b.firm) == []
+
+
+def test_audit_rows_cannot_be_updated(api, firm_a):
+    _full_cycle(api(firm_a.attorney), firm_a.document)
+    with tenant_context(firm_a.firm.id):
+        with pytest.raises(DatabaseError, match="append-only"), transaction.atomic():
+            AuditLog.objects.update(action="document_created")
+        assert AuditLog.objects.filter(action="document_created").count() == 0
+
+
+def test_audit_rows_cannot_be_deleted(api, firm_a):
+    _full_cycle(api(firm_a.attorney), firm_a.document)
+    with tenant_context(firm_a.firm.id):
+        with pytest.raises(DatabaseError, match="append-only"), transaction.atomic():
+            AuditLog.objects.all().delete()
+        with pytest.raises(DatabaseError, match="append-only"), transaction.atomic():
+            with connection.cursor() as cursor:
+                cursor.execute("DELETE FROM vault_auditlog")
+        assert AuditLog.objects.count() == 3
+
+
+def test_audit_table_cannot_be_truncated(db):
+    with pytest.raises(DatabaseError, match="append-only"), transaction.atomic():
+        with connection.cursor() as cursor:
+            cursor.execute("TRUNCATE vault_auditlog")
+
+
+def test_audit_log_is_tenant_isolated(api, firm_a, firm_b):
+    _full_cycle(api(firm_a.attorney), firm_a.document)
+    assert api(firm_b.attorney).get("/api/audit-log/").json() == []
+    with tenant_context(firm_b.firm.id):
+        assert AuditLog.unscoped.count() == 0  # row-level security, not just the manager
+
+
+def test_audit_api_lists_newest_first_and_filters_by_document(api, firm_a):
+    client = api(firm_a.attorney)
+    _full_cycle(client, firm_a.document)
+    rows = client.get(f"/api/audit-log/?document={firm_a.document.pk}").json()
+    assert [row["action"] for row in rows] == [
+        "download_url_issued",
+        "version_recorded",
+        "upload_url_issued",
+    ]
+    assert {row["actor"] for row in rows} == {"alpha-lead"}
+
+
+def test_audit_api_hides_walled_off_matters(api, firm_a):
+    _full_cycle(api(firm_a.attorney), firm_a.document)
+    with tenant_context(firm_a.firm.id):
+        MatterBlock.objects.create(
+            firm=firm_a.firm, matter=firm_a.matter, attorney=firm_a.colleague
+        )
+    assert api(firm_a.colleague).get("/api/audit-log/").json() == []
+    assert len(api(firm_a.attorney).get("/api/audit-log/").json()) == 3

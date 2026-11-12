@@ -46,5 +46,11 @@ REST_FRAMEWORK = {
     "DEFAULT_PERMISSION_CLASSES": ["rest_framework.permissions.IsAuthenticated"],
 }
 
+# Object storage. Credentials and region come from the standard AWS environment
+# variables. S3_ENDPOINT_URL is only set for a local S3 stand-in.
+S3_BUCKET = os.environ.get("S3_BUCKET", "counselvault-dev")
+S3_ENDPOINT_URL = os.environ.get("S3_ENDPOINT_URL") or None
+S3_URL_TTL_SECONDS = 300
+
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 USE_TZ = True
