@@ -7,12 +7,13 @@ from rest_framework.exceptions import NotFound, ValidationError
 from rest_framework.response import Response
 
 from . import audit, storage
-from .models import AuditLog, Document, DocumentVersion, Matter
+from .models import AuditLog, Document, DocumentVersion, Matter, MatterBlock
 from .serializers import (
     AuditLogSerializer,
     DocumentSerializer,
     DocumentVersionSerializer,
     MatterSerializer,
+    WallSerializer,
 )
 from .tenancy import tenant_context
 
@@ -20,6 +21,14 @@ from .tenancy import tenant_context
 class IsAttorney(permissions.BasePermission):
     def has_permission(self, request, view):
         return hasattr(request.user, "attorney")
+
+
+class IsFirmAdmin(permissions.BasePermission):
+    def has_permission(self, request, view):
+        return request.user.attorney.is_firm_admin
+
+
+WALL_PERMISSIONS = [permissions.IsAuthenticated, IsAttorney, IsFirmAdmin]
 
 
 class TenantScopedMixin:
@@ -69,6 +78,48 @@ class MatterViewSet(_ReadCreateViewSet):
 
     def get_queryset(self):
         return Matter.objects.visible_to(self.request.user.attorney).order_by("-created_at")
+
+    @action(detail=True, methods=["get", "post"], permission_classes=WALL_PERMISSIONS)
+    def walls(self, request, pk=None):
+        """List the attorneys walled off from this matter, or wall one off. Firm admins only."""
+        matter = self.get_object()
+        if request.method == "GET":
+            blocks = MatterBlock.objects.filter(matter=matter).select_related("attorney__user")
+            return Response(
+                [
+                    {
+                        "attorney": block.attorney_id,
+                        "username": block.attorney.user.username,
+                        "created_at": block.created_at,
+                    }
+                    for block in blocks.order_by("created_at")
+                ]
+            )
+        serializer = WallSerializer(data=request.data, context={"request": request})
+        serializer.is_valid(raise_exception=True)
+        attorney = serializer.validated_data["attorney"]
+        _, created = MatterBlock.objects.get_or_create(
+            matter=matter, attorney=attorney, defaults={"firm_id": matter.firm_id}
+        )
+        if created:
+            audit.record(request, AuditLog.Action.WALL_ADDED, matter=matter, attorney=attorney.pk)
+        return Response(status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
+
+    @action(
+        detail=True,
+        methods=["delete"],
+        url_path=r"walls/(?P<attorney_id>\d+)",
+        permission_classes=WALL_PERMISSIONS,
+    )
+    def remove_wall(self, request, pk=None, attorney_id=None):
+        matter = self.get_object()
+        deleted, _ = MatterBlock.objects.filter(matter=matter, attorney_id=attorney_id).delete()
+        if not deleted:
+            raise NotFound("That attorney is not walled off from this matter.")
+        audit.record(
+            request, AuditLog.Action.WALL_REMOVED, matter=matter, attorney=int(attorney_id)
+        )
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class DocumentViewSet(_ReadCreateViewSet):
@@ -162,7 +213,8 @@ class AuditLogViewSet(TenantScopedMixin, mixins.ListModelMixin, viewsets.Generic
 
     def get_queryset(self):
         queryset = AuditLog.objects.visible_to(self.request.user.attorney)
-        document = self.request.query_params.get("document")
-        if document:
-            queryset = queryset.filter(document_id=document)
+        for field in ("document", "matter"):
+            value = self.request.query_params.get(field)
+            if value:
+                queryset = queryset.filter(**{f"{field}_id": value})
         return queryset.select_related("actor__user").order_by("-created_at", "-id")

@@ -39,9 +39,9 @@ def django_db_setup(django_db_setup, django_db_blocker):
     default.settings_dict.update(USER=owner_credentials[0], PASSWORD=owner_credentials[1])
 
 
-def _attorney(username, firm):
+def _attorney(username, firm, is_firm_admin=False):
     user = get_user_model().objects.create_user(username=username, password="x")
-    return Attorney.objects.create(user=user, firm=firm)
+    return Attorney.objects.create(user=user, firm=firm, is_firm_admin=is_firm_admin)
 
 
 def _firm_with_data(name):
@@ -57,6 +57,7 @@ def _firm_with_data(name):
         document=document,
         attorney=_attorney(f"{name}-lead", firm),
         colleague=_attorney(f"{name}-colleague", firm),
+        admin=_attorney(f"{name}-admin", firm, is_firm_admin=True),
     )
 
 

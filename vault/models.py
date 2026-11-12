@@ -24,6 +24,8 @@ class Attorney(models.Model):
         settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="attorney"
     )
     firm = models.ForeignKey(Firm, on_delete=models.CASCADE, related_name="attorneys")
+    # Firm admins manage ethical walls.
+    is_firm_admin = models.BooleanField(default=False)
 
     def __str__(self):
         return f"{self.user} @ {self.firm}"
@@ -164,13 +166,17 @@ class DocumentVersion(models.Model):
 
 class AuditLogQuerySet(models.QuerySet):
     def visible_to(self, attorney):
-        return self.exclude(document__matter__blocks__attorney=attorney)
+        """Hide entries about matters (and their documents) this attorney is walled off from."""
+        return self.exclude(document__matter__blocks__attorney=attorney).exclude(
+            matter__blocks__attorney=attorney
+        )
 
 
 class AuditLog(models.Model):
-    """Append-only record of who touched which document.
+    """Append-only record of who touched which document or changed access to which matter.
 
-    Database triggers (migration 0004) reject UPDATE, DELETE and TRUNCATE.
+    The application role has no UPDATE or DELETE privilege on this table, and
+    database triggers reject UPDATE, DELETE and TRUNCATE even for the owner.
     Foreign keys use PROTECT so related rows cannot be deleted out from under it.
     """
 
@@ -179,11 +185,15 @@ class AuditLog(models.Model):
         UPLOAD_URL_ISSUED = "upload_url_issued"
         VERSION_RECORDED = "version_recorded"
         DOWNLOAD_URL_ISSUED = "download_url_issued"
+        WALL_ADDED = "wall_added"
+        WALL_REMOVED = "wall_removed"
 
     firm = models.ForeignKey(Firm, on_delete=models.PROTECT)
     actor = models.ForeignKey(Attorney, on_delete=models.PROTECT)
     action = models.CharField(max_length=40, choices=Action.choices)
-    document = models.ForeignKey(Document, on_delete=models.PROTECT)
+    # Document events set document; access changes set matter.
+    document = models.ForeignKey(Document, on_delete=models.PROTECT, null=True, blank=True)
+    matter = models.ForeignKey(Matter, on_delete=models.PROTECT, null=True, blank=True)
     metadata = models.JSONField(default=dict)
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -194,4 +204,13 @@ class AuditLog(models.Model):
         default_manager_name = "objects"
         indexes = [
             models.Index(fields=["firm", "document", "-created_at"], name="audit_firm_doc_created"),
+            models.Index(
+                fields=["firm", "matter", "-created_at"], name="audit_firm_matter_created"
+            ),
+        ]
+        constraints = [
+            models.CheckConstraint(
+                condition=Q(document__isnull=False) | Q(matter__isnull=False),
+                name="audit_has_a_subject",
+            )
         ]

@@ -1,6 +1,6 @@
 from rest_framework import serializers
 
-from .models import AuditLog, Document, DocumentVersion, Matter
+from .models import Attorney, AuditLog, Document, DocumentVersion, Matter
 
 
 class MatterSerializer(serializers.ModelSerializer):
@@ -46,4 +46,17 @@ class AuditLogSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = AuditLog
-        fields = ["id", "actor", "action", "document", "metadata", "created_at"]
+        fields = ["id", "actor", "action", "document", "matter", "metadata", "created_at"]
+
+
+class WallSerializer(serializers.Serializer):
+    """Input for walling an attorney off from a matter."""
+
+    attorney = serializers.IntegerField()
+
+    def validate_attorney(self, attorney_id):
+        firm_id = self.context["request"].user.attorney.firm_id
+        attorney = Attorney.objects.filter(pk=attorney_id, firm_id=firm_id).first()
+        if attorney is None:  # includes attorneys of other firms
+            raise serializers.ValidationError("No such attorney in this firm.")
+        return attorney
