@@ -7,3 +7,6 @@
 CREATE ROLE counselvault_owner LOGIN CREATEDB PASSWORD 'owner-dev-password';
 CREATE ROLE counselvault_app LOGIN PASSWORD 'app-dev-password';
 CREATE DATABASE counselvault OWNER counselvault_owner;
+
+-- Used only by the optional local streaming replica (docker compose --profile replica).
+CREATE ROLE replicator LOGIN REPLICATION PASSWORD 'replicator-dev-password';

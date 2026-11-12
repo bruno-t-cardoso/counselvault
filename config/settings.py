@@ -75,6 +75,16 @@ DATABASES = {
     ),
 }
 
+# Optional streaming replica for lag-tolerant reads (see vault/routing.py).
+if os.environ.get("DB_REPLICA_HOST"):
+    DATABASES["replica"] = _database(
+        DB_APP_USER,
+        os.environ.get("DB_APP_PASSWORD", "app-dev-password"),
+        HOST=os.environ["DB_REPLICA_HOST"],
+        TEST={"MIRROR": "default"},
+    )
+DATABASE_ROUTERS = ["vault.routing.ReplicaRouter"]
+
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": ["rest_framework.authentication.TokenAuthentication"],
     "DEFAULT_PERMISSION_CLASSES": ["rest_framework.permissions.IsAuthenticated"],

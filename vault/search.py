@@ -14,6 +14,8 @@ MAX_RESULTS = 50
 class SearchView(TenantScopedMixin, APIView):
     """Full-text search over the latest version of each document the caller may see."""
 
+    reads_tolerate_replica_lag = True
+
     def get(self, request):
         terms = request.query_params.get("q", "").strip()
         if not terms:

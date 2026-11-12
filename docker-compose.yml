@@ -6,11 +6,31 @@ services:
       POSTGRES_PASSWORD: postgres
     volumes:
       - ./docker/initdb.sql:/docker-entrypoint-initdb.d/initdb.sql:ro
+      - ./docker/allow-replication.sh:/docker-entrypoint-initdb.d/allow-replication.sh:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U counselvault_owner -d counselvault"]
       interval: 2s
       timeout: 3s
       retries: 30
+  replica:
+    # Optional read replica, kept in sync by streaming replication.
+    # Start with: DB_REPLICA_HOST=replica docker compose --profile replica up
+    image: postgres:16
+    profiles: ["replica"]
+    user: postgres
+    command:
+      - bash
+      - -c
+      - |
+        if [ ! -s "$$PGDATA/PG_VERSION" ]; then
+          pg_basebackup -D "$$PGDATA" -R -X stream \
+            -d "host=db user=replicator password=replicator-dev-password"
+          chmod 700 "$$PGDATA"
+        fi
+        exec postgres
+    depends_on:
+      db:
+        condition: service_healthy
   s3:
     # Local stand-in for AWS S3 (moto server), for development and tests.
     image: motoserver/moto
@@ -23,6 +43,7 @@ services:
     environment: &app_env
       DJANGO_DEBUG: "1"
       DB_HOST: db
+      DB_REPLICA_HOST: ${DB_REPLICA_HOST:-}
       S3_ENDPOINT_URL: http://s3:5000
       S3_BUCKET: counselvault-dev
       AWS_ACCESS_KEY_ID: local

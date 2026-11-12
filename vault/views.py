@@ -1,3 +1,5 @@
+from contextlib import ExitStack
+
 from django.conf import settings
 from django.db import transaction
 from django.db.models import Max
@@ -8,6 +10,7 @@ from rest_framework.response import Response
 
 from . import audit, storage
 from .models import AuditLog, Document, DocumentVersion, Matter, MatterBlock
+from .routing import REPLICA, read_from_replica, replica_configured
 from .serializers import (
     AuditLogSerializer,
     DocumentSerializer,
@@ -40,11 +43,25 @@ class TenantScopedMixin:
     """
 
     permission_classes = [permissions.IsAuthenticated, IsAttorney]
+    # Set on views whose reads may be slightly stale; see vault/routing.py.
+    reads_tolerate_replica_lag = False
+
+    def uses_replica(self, request):
+        return (
+            self.reads_tolerate_replica_lag
+            and request.method in permissions.SAFE_METHODS
+            and replica_configured()
+        )
 
     def initial(self, request, *args, **kwargs):
         super().initial(request, *args, **kwargs)  # authentication + permissions
-        self._tenant = tenant_context(request.user.attorney.firm_id)
-        self._tenant.__enter__()
+        scope = ExitStack()
+        databases = ("default",)
+        if self.uses_replica(request):
+            databases = ("default", REPLICA)  # the tenant must be set on both connections
+            scope.enter_context(read_from_replica())
+        scope.enter_context(tenant_context(request.user.attorney.firm_id, using=databases))
+        self._tenant = scope
 
     def handle_exception(self, exc):
         response = super().handle_exception(exc)
@@ -225,6 +242,7 @@ class AuditLogViewSet(TenantScopedMixin, mixins.ListModelMixin, viewsets.Generic
     """Read-only. Entries for documents behind an ethical wall are hidden."""
 
     serializer_class = AuditLogSerializer
+    reads_tolerate_replica_lag = True
 
     def get_queryset(self):
         queryset = AuditLog.objects.visible_to(self.request.user.attorney)
