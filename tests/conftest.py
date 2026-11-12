@@ -50,17 +50,40 @@ def api():
 
 
 @pytest.fixture(scope="session", autouse=True)
-def versioned_bucket():
-    """Create the test bucket with versioning on, as production would have it."""
-    from django.conf import settings
+def local_aws():
+    """Bucket (versioned), queue and S3-to-SQS notification, as production would have them."""
+    from vault import localaws
 
+    return localaws.setup()
+
+
+@pytest.fixture(autouse=True)
+def empty_upload_queue(local_aws, settings):
+    """Start every test with no leftover upload events, and retry without delay."""
     from vault import storage
 
-    s3 = storage.client()
-    try:
-        s3.create_bucket(Bucket=settings.S3_BUCKET)
-    except s3.exceptions.BucketAlreadyOwnedByYou:
-        pass
-    s3.put_bucket_versioning(
-        Bucket=settings.S3_BUCKET, VersioningConfiguration={"Status": "Enabled"}
-    )
+    sqs = storage.sqs_client()
+    # Not purge_queue: SQS allows that only once a minute.
+    while messages := sqs.receive_message(QueueUrl=local_aws, MaxNumberOfMessages=10).get(
+        "Messages"
+    ):
+        for message in messages:
+            sqs.delete_message(QueueUrl=local_aws, ReceiptHandle=message["ReceiptHandle"])
+    settings.UPLOAD_EVENT_RETRY_SECONDS = 0
+
+
+@pytest.fixture
+def upload():
+    """Upload bytes through a presigned URL and record the version, as a client would."""
+    import urllib.request
+
+    def do_upload(client, document, body, record=True):
+        url = client.post(f"/api/documents/{document.pk}/upload-url/").json()["url"]
+        request = urllib.request.Request(
+            url, data=body, method="PUT", headers={"Content-Type": "application/octet-stream"}
+        )
+        urllib.request.urlopen(request)
+        if record:
+            return client.post(f"/api/documents/{document.pk}/versions/")
+
+    return do_upload

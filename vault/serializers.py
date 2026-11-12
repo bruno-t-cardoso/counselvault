@@ -33,7 +33,14 @@ class DocumentVersionSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = DocumentVersion
-        fields = ["number", "size_bytes", "uploaded_by", "created_at"]
+        fields = [
+            "number",
+            "size_bytes",
+            "uploaded_by",
+            "created_at",
+            "text_status",
+            "needs_redaction",
+        ]
 
 
 class AuditLogSerializer(serializers.ModelSerializer):

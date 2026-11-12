@@ -12,6 +12,7 @@ INSTALLED_APPS = [
     "django.contrib.auth",
     "django.contrib.contenttypes",
     "django.contrib.sessions",
+    "django.contrib.postgres",
     "rest_framework",
     "vault",
 ]
@@ -51,6 +52,14 @@ REST_FRAMEWORK = {
 S3_BUCKET = os.environ.get("S3_BUCKET", "counselvault-dev")
 S3_ENDPOINT_URL = os.environ.get("S3_ENDPOINT_URL") or None
 S3_URL_TTL_SECONDS = 300
+
+# Upload events: S3 notifies this SQS queue, and the worker reads from it.
+UPLOAD_EVENTS_QUEUE = os.environ.get("UPLOAD_EVENTS_QUEUE", "counselvault-uploads")
+SQS_ENDPOINT_URL = os.environ.get("SQS_ENDPOINT_URL") or S3_ENDPOINT_URL
+# How long a message the worker could not handle yet stays hidden before a retry.
+UPLOAD_EVENT_RETRY_SECONDS = 5
+# Files larger than this are not downloaded for text extraction.
+TEXT_EXTRACTION_MAX_BYTES = 20 * 1024 * 1024
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 USE_TZ = True

@@ -27,6 +27,23 @@ def client():
     return boto3.client("s3", endpoint_url=settings.S3_ENDPOINT_URL, config=Config(**options))
 
 
+def sqs_client():
+    return boto3.client("sqs", endpoint_url=settings.SQS_ENDPOINT_URL)
+
+
+class TooLarge(Exception):
+    pass
+
+
+def read_version(key: str, version_id: str) -> bytes:
+    """Download one object version, refusing anything over the extraction size limit."""
+    response = client().get_object(Bucket=settings.S3_BUCKET, Key=key, VersionId=version_id)
+    if response["ContentLength"] > settings.TEXT_EXTRACTION_MAX_BYTES:
+        response["Body"].close()
+        raise TooLarge(key)
+    return response["Body"].read()
+
+
 def document_key(document) -> str:
     return f"firms/{document.firm_id}/documents/{document.pk}"
 

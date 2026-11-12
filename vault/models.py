@@ -1,6 +1,8 @@
 import uuid
 
 from django.conf import settings
+from django.contrib.postgres.indexes import GinIndex
+from django.contrib.postgres.search import SearchVectorField
 from django.db import models
 from django.db.models import Q
 
@@ -133,12 +135,27 @@ class DocumentVersion(models.Model):
     uploaded_by = models.ForeignKey(Attorney, on_delete=models.PROTECT)
     created_at = models.DateTimeField(auto_now_add=True)
 
+    # Filled in by the background worker (vault/pipeline.py).
+    class TextStatus(models.TextChoices):
+        PENDING = "pending"
+        EXTRACTED = "extracted"
+        UNSUPPORTED = "unsupported"  # not a PDF or text file, or too large
+        FAILED = "failed"
+
+    text_status = models.CharField(
+        max_length=12, choices=TextStatus.choices, default=TextStatus.PENDING
+    )
+    extracted_text = models.TextField(blank=True)
+    needs_redaction = models.BooleanField(default=False)
+    search_vector = SearchVectorField(null=True)
+
     objects = TenantManager()
     unscoped = models.Manager()
 
     class Meta:
         default_manager_name = "objects"
         ordering = ["number"]
+        indexes = [GinIndex(fields=["search_vector"], name="version_search_gin")]
         constraints = [
             models.UniqueConstraint(fields=["document", "number"], name="version_number_once"),
             models.UniqueConstraint(

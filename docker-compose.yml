@@ -14,18 +14,30 @@ services:
   s3:
     # Local stand-in for AWS S3 (moto server), for development and tests.
     image: motoserver/moto
-  app:
+  worker:
+    # Reads S3 upload events from SQS and extracts text for search.
     build: .
-    command: python manage.py runserver 0.0.0.0:8000
+    command: sh -c "python manage.py setup_local_aws && python manage.py consume_uploads"
     volumes:
       - .:/app
-    environment:
+    environment: &app_env
       DB_HOST: db
       S3_ENDPOINT_URL: http://s3:5000
       S3_BUCKET: counselvault-dev
       AWS_ACCESS_KEY_ID: local
       AWS_SECRET_ACCESS_KEY: local
       AWS_DEFAULT_REGION: us-east-1
+    depends_on:
+      db:
+        condition: service_healthy
+      s3:
+        condition: service_started
+  app:
+    build: .
+    command: python manage.py runserver 0.0.0.0:8000
+    volumes:
+      - .:/app
+    environment: *app_env
     ports:
       - "8000:8000"
     depends_on:
