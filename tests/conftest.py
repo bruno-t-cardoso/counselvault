@@ -106,16 +106,6 @@ def empty_upload_queue(local_aws, settings):
 
 @pytest.fixture
 def upload():
-    """Upload bytes through a presigned URL and record the version, as a client would."""
-    import urllib.request
+    from .helpers import upload_file
 
-    def do_upload(client, document, body, record=True):
-        url = client.post(f"/api/documents/{document.pk}/upload-url/").json()["url"]
-        request = urllib.request.Request(
-            url, data=body, method="PUT", headers={"Content-Type": "application/octet-stream"}
-        )
-        urllib.request.urlopen(request)
-        if record:
-            return client.post(f"/api/documents/{document.pk}/versions/")
-
-    return do_upload
+    return upload_file

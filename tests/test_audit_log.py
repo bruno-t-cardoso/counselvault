@@ -1,13 +1,13 @@
 """The audit trail: what gets recorded, who can read it, and that it cannot be altered."""
 
-import urllib.request
-
 import pytest
 from django.contrib.auth import get_user_model
 from django.db import DatabaseError, connection, connections, transaction
 
 from vault.models import Attorney, AuditLog, Client, Document, Firm, Matter, MatterBlock
 from vault.tenancy import tenant_context
+
+from .helpers import upload_file
 
 
 def _actions(firm):
@@ -16,13 +16,7 @@ def _actions(firm):
 
 
 def _full_cycle(client, document):
-    url = client.post(f"/api/documents/{document.pk}/upload-url/").json()["url"]
-    urllib.request.urlopen(
-        urllib.request.Request(
-            url, data=b"file", method="PUT", headers={"Content-Type": "application/octet-stream"}
-        )
-    )
-    client.post(f"/api/documents/{document.pk}/versions/")
+    upload_file(client, document, b"file")
     client.post(f"/api/documents/{document.pk}/download-url/")
 
 
@@ -106,7 +100,7 @@ def test_even_the_table_owner_cannot_truncate_the_audit_log():
 
 def test_audit_log_is_tenant_isolated(api, firm_a, firm_b):
     _full_cycle(api(firm_a.attorney), firm_a.document)
-    assert api(firm_b.attorney).get("/api/audit-log/").json() == []
+    assert api(firm_b.attorney).get("/api/audit-log/").json()["results"] == []
     with tenant_context(firm_b.firm.id):
         assert AuditLog.unscoped.count() == 0  # row-level security, not just the manager
 
@@ -114,7 +108,7 @@ def test_audit_log_is_tenant_isolated(api, firm_a, firm_b):
 def test_audit_api_lists_newest_first_and_filters_by_document(api, firm_a):
     client = api(firm_a.attorney)
     _full_cycle(client, firm_a.document)
-    rows = client.get(f"/api/audit-log/?document={firm_a.document.pk}").json()
+    rows = client.get(f"/api/audit-log/?document={firm_a.document.pk}").json()["results"]
     assert [row["action"] for row in rows] == [
         "download_url_issued",
         "version_recorded",
@@ -129,5 +123,5 @@ def test_audit_api_hides_walled_off_matters(api, firm_a):
         MatterBlock.objects.create(
             firm=firm_a.firm, matter=firm_a.matter, attorney=firm_a.colleague
         )
-    assert api(firm_a.colleague).get("/api/audit-log/").json() == []
-    assert len(api(firm_a.attorney).get("/api/audit-log/").json()) == 3
+    assert api(firm_a.colleague).get("/api/audit-log/").json()["results"] == []
+    assert len(api(firm_a.attorney).get("/api/audit-log/").json()["results"]) == 3

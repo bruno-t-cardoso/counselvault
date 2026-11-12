@@ -108,7 +108,9 @@ def partition(apps, schema_editor):
         FROM generate_series(0, 3) AS n
         """,
         # 5. Copy the rows and continue the id sequence after them.
-        f"INSERT INTO vault_auditlog ({COLUMNS}) SELECT {COLUMNS} FROM vault_auditlog_unpartitioned",
+        # COLUMNS is a constant defined above, not user input.
+        f"INSERT INTO vault_auditlog ({COLUMNS})"  # noqa: S608
+        f" SELECT {COLUMNS} FROM vault_auditlog_unpartitioned",
         """
         SELECT setval(pg_get_serial_sequence('vault_auditlog', 'id'),
                       COALESCE(max(id), 0) + 1, false)

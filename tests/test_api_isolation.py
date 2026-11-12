@@ -11,7 +11,7 @@ def test_requires_login(db):
 
 
 def test_list_shows_only_own_firm(api, firm_a, firm_b):
-    body = api(firm_a.attorney).get("/api/matters/").json()
+    body = api(firm_a.attorney).get("/api/matters/").json()["results"]
     assert [row["id"] for row in body] == [str(firm_a.matter.pk)]
 
 
@@ -58,16 +58,16 @@ def test_ethical_wall_hides_matter_and_its_documents(api, firm_a):
     _block(firm_a, firm_a.colleague)
     blocked = api(firm_a.colleague)
 
-    assert blocked.get("/api/matters/").json() == []
+    assert blocked.get("/api/matters/").json()["results"] == []
     assert blocked.get(f"/api/matters/{firm_a.matter.pk}/").status_code == 404
-    assert blocked.get("/api/documents/").json() == []
+    assert blocked.get("/api/documents/").json()["results"] == []
     assert blocked.get(f"/api/documents/{firm_a.document.pk}/").status_code == 404
 
 
 def test_ethical_wall_does_not_affect_other_attorneys(api, firm_a):
     _block(firm_a, firm_a.colleague)
     assert api(firm_a.attorney).get(f"/api/matters/{firm_a.matter.pk}/").status_code == 200
-    assert len(api(firm_a.attorney).get("/api/documents/").json()) == 1
+    assert len(api(firm_a.attorney).get("/api/documents/").json()["results"]) == 1
 
 
 def test_blocked_attorney_cannot_add_documents_to_the_matter(api, firm_a):
@@ -81,5 +81,5 @@ def test_blocked_attorney_cannot_add_documents_to_the_matter(api, firm_a):
 def test_tenant_does_not_leak_between_requests(api, firm_a, firm_b):
     api(firm_a.attorney).get("/api/matters/")
     assert Matter.unscoped.count() == 0  # nothing left set after the request
-    body = api(firm_b.attorney).get("/api/matters/").json()
+    body = api(firm_b.attorney).get("/api/matters/").json()["results"]
     assert [row["id"] for row in body] == [str(firm_b.matter.pk)]

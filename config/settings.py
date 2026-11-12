@@ -32,6 +32,7 @@ INSTALLED_APPS = [
     "django.contrib.sessions",
     "django.contrib.postgres",
     "rest_framework",
+    "rest_framework.authtoken",
     "vault",
 ]
 
@@ -75,13 +76,11 @@ DATABASES = {
 }
 
 REST_FRAMEWORK = {
-    "DEFAULT_AUTHENTICATION_CLASSES": [
-        "rest_framework.authentication.SessionAuthentication",
-        "rest_framework.authentication.BasicAuthentication",
-    ],
+    "DEFAULT_AUTHENTICATION_CLASSES": ["rest_framework.authentication.TokenAuthentication"],
     "DEFAULT_PERMISSION_CLASSES": ["rest_framework.permissions.IsAuthenticated"],
+    "DEFAULT_PAGINATION_CLASS": "vault.pagination.NewestFirstPagination",
     "DEFAULT_THROTTLE_CLASSES": ["rest_framework.throttling.UserRateThrottle"],
-    "DEFAULT_THROTTLE_RATES": {"user": "600/min"},
+    "DEFAULT_THROTTLE_RATES": {"user": "600/min", "login": "10/min"},
 }
 
 # Object storage. Credentials and region come from the standard AWS environment
@@ -89,6 +88,10 @@ REST_FRAMEWORK = {
 S3_BUCKET = os.environ.get("S3_BUCKET", "counselvault-dev")
 S3_ENDPOINT_URL = os.environ.get("S3_ENDPOINT_URL") or None
 S3_URL_TTL_SECONDS = 300
+# Enforced twice: by S3 through the signed upload policy, and again by the API
+# before it records a version.
+UPLOAD_MAX_BYTES = 25 * 1024 * 1024
+UPLOAD_CONTENT_TYPES = ["application/pdf", "text/plain"]
 
 # Upload events: S3 notifies this SQS queue, and the worker reads from it.
 UPLOAD_EVENTS_QUEUE = os.environ.get("UPLOAD_EVENTS_QUEUE", "counselvault-uploads")

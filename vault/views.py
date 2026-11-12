@@ -13,6 +13,7 @@ from .serializers import (
     DocumentSerializer,
     DocumentVersionSerializer,
     MatterSerializer,
+    UploadRequestSerializer,
     WallSerializer,
 )
 from .tenancy import tenant_context
@@ -142,11 +143,19 @@ class DocumentViewSet(_ReadCreateViewSet):
     @action(detail=True, methods=["post"], url_path="upload-url")
     def upload_url(self, request, pk=None):
         document = self.get_object()
-        audit.record(request, AuditLog.Action.UPLOAD_URL_ISSUED, document)
+        upload = UploadRequestSerializer(data=request.data)
+        upload.is_valid(raise_exception=True)
+        content_type = upload.validated_data["content_type"]
+        audit.record(
+            request, AuditLog.Action.UPLOAD_URL_ISSUED, document, content_type=content_type
+        )
+        signed = storage.presign_upload(storage.document_key(document), content_type)
         return Response(
             {
-                "url": storage.presign_upload(storage.document_key(document)),
-                "method": "PUT",
+                "url": signed["url"],
+                "method": "POST",
+                "fields": signed["fields"],  # send as form fields, followed by the file
+                "max_bytes": settings.UPLOAD_MAX_BYTES,
                 "expires_in": settings.S3_URL_TTL_SECONDS,
             }
         )
@@ -167,6 +176,12 @@ class DocumentViewSet(_ReadCreateViewSet):
         stored = storage.head_latest(key)
         if stored is None:
             raise ValidationError("No uploaded file was found for this document.")
+        # S3 enforces these through the signed upload policy; check again, because the
+        # API must not trust that every object under this key came through that policy.
+        if stored.size_bytes > settings.UPLOAD_MAX_BYTES:
+            raise ValidationError("The uploaded file is larger than the allowed size.")
+        if stored.content_type not in settings.UPLOAD_CONTENT_TYPES:
+            raise ValidationError("The uploaded file is not an allowed type.")
         with transaction.atomic():
             # Serialise concurrent confirmations for the same document.
             Document.objects.select_for_update().get(pk=document.pk)

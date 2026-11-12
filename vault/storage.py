@@ -18,6 +18,7 @@ from django.conf import settings
 class StoredObject:
     version_id: str
     size_bytes: int
+    content_type: str
 
 
 def client():
@@ -48,10 +49,17 @@ def document_key(document) -> str:
     return f"firms/{document.firm_id}/documents/{document.pk}"
 
 
-def presign_upload(key: str) -> str:
-    return client().generate_presigned_url(
-        "put_object",
-        Params={"Bucket": settings.S3_BUCKET, "Key": key},
+def presign_upload(key: str, content_type: str) -> dict:
+    """A signed browser-style POST. S3 itself rejects an upload that is larger than
+    the limit or that declares a different content type than the one signed here."""
+    return client().generate_presigned_post(
+        Bucket=settings.S3_BUCKET,
+        Key=key,
+        Fields={"Content-Type": content_type},
+        Conditions=[
+            {"Content-Type": content_type},
+            ["content-length-range", 1, settings.UPLOAD_MAX_BYTES],
+        ],
         ExpiresIn=settings.S3_URL_TTL_SECONDS,
     )
 
@@ -72,4 +80,8 @@ def head_latest(key: str) -> StoredObject | None:
         if error.response["Error"]["Code"] in ("404", "NoSuchKey", "NotFound"):
             return None
         raise
-    return StoredObject(version_id=response["VersionId"], size_bytes=response["ContentLength"])
+    return StoredObject(
+        version_id=response["VersionId"],
+        size_bytes=response["ContentLength"],
+        content_type=response.get("ContentType", ""),
+    )

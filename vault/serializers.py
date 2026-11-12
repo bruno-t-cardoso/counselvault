@@ -1,3 +1,4 @@
+from django.conf import settings
 from rest_framework import serializers
 
 from .models import Attorney, AuditLog, Document, DocumentVersion, Matter
@@ -60,3 +61,7 @@ class WallSerializer(serializers.Serializer):
         if attorney is None:  # includes attorneys of other firms
             raise serializers.ValidationError("No such attorney in this firm.")
         return attorney
+
+
+class UploadRequestSerializer(serializers.Serializer):
+    content_type = serializers.ChoiceField(choices=settings.UPLOAD_CONTENT_TYPES)

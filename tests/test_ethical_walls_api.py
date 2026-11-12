@@ -84,6 +84,8 @@ def test_cannot_wall_off_an_attorney_from_another_firm(api, firm_a, firm_b):
 
 def test_walled_off_attorney_cannot_read_the_wall_audit_entries(api, firm_a):
     api(firm_a.admin).post(_walls(firm_a), {"attorney": firm_a.colleague.pk}, format="json")
-    assert api(firm_a.colleague).get("/api/audit-log/").json() == []
-    visible = api(firm_a.attorney).get(f"/api/audit-log/?matter={firm_a.matter.pk}").json()
+    assert api(firm_a.colleague).get("/api/audit-log/").json()["results"] == []
+    visible = (
+        api(firm_a.attorney).get(f"/api/audit-log/?matter={firm_a.matter.pk}").json()["results"]
+    )
     assert [row["action"] for row in visible] == ["wall_added"]
