@@ -10,4 +10,6 @@ ignore = [
 ]
 
 [lint.per-file-ignores]
+# Builds SQL from constants and renders long Markdown table rows.
+"vault/management/commands/benchmark_queries.py" = ["S608", "E501"]
 "tests/*" = ["S101", "S106", "S310"]  # asserts, test passwords, urlopen on local URLs

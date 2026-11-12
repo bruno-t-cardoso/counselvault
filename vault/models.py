@@ -43,10 +43,28 @@ class Client(models.Model):
         default_manager_name = "objects"
 
 
+def walled_off_matter_ids(attorney):
+    """Subquery of the matters this attorney is walled off from.
+
+    Used as ``NOT IN (subquery)``, which PostgreSQL evaluates once as a hashed set. The
+    earlier join-based form was re-checked for every candidate row (docs/query-plans.md).
+    """
+    return MatterBlock.objects.filter(attorney=attorney).values("matter_id")
+
+
+def walled_off_document_ids(attorney):
+    """Subquery of the documents in matters this attorney is walled off from.
+
+    Lets tables that reference a document (versions, audit entries) apply the wall on
+    their own ``document_id`` column, without joining to the document for every row.
+    """
+    return Document.objects.filter(matter_id__in=walled_off_matter_ids(attorney)).values("id")
+
+
 class MatterQuerySet(models.QuerySet):
     def visible_to(self, attorney):
         """Apply the ethical wall: hide matters this attorney is blocked from."""
-        return self.exclude(blocks__attorney=attorney)
+        return self.exclude(pk__in=walled_off_matter_ids(attorney))
 
 
 class Matter(models.Model):
@@ -68,15 +86,11 @@ class Matter(models.Model):
         default_manager_name = "objects"
         indexes = [
             # "A firm's matters for one client, newest first."
-            models.Index(
-                fields=["firm", "client", "-created_at"], name="matter_firm_client_created"
-            ),
-            # Most reads are for active matters; keep that index small.
-            models.Index(
-                fields=["firm", "client"],
-                condition=Q(status="active"),
-                name="matter_active_firm_client",
-            ),
+            # The paginated matter list: a firm's matters, newest first.
+            models.Index(fields=["firm", "-created_at"], name="matter_firm_created"),
+            # Measured and removed (docs/query-plans.md): indexes on (firm, client, created_at)
+            # and on active matters only. The client foreign-key index already answers
+            # "a client's matters" in well under a millisecond.
         ]
 
 
@@ -101,7 +115,7 @@ class MatterBlock(models.Model):
 
 class DocumentQuerySet(models.QuerySet):
     def visible_to(self, attorney):
-        return self.exclude(matter__blocks__attorney=attorney)
+        return self.exclude(matter_id__in=walled_off_matter_ids(attorney))
 
 
 class Document(models.Model):
@@ -119,6 +133,8 @@ class Document(models.Model):
     class Meta:
         default_manager_name = "objects"
         indexes = [
+            # The paginated document list: a firm's documents, newest first.
+            models.Index(fields=["firm", "-created_at"], name="doc_firm_created"),
             models.Index(fields=["firm", "matter", "-created_at"], name="doc_firm_matter_created"),
         ]
 
@@ -155,6 +171,9 @@ class DocumentVersion(models.Model):
     class Meta:
         default_manager_name = "objects"
         ordering = ["number"]
+        # Not used by the planner while row-level security is on: the text-match operator
+        # is not marked leakproof, so it cannot be an index condition ahead of the policy.
+        # Kept for deployments where a superuser marks it leakproof; docs/query-plans.md.
         indexes = [GinIndex(fields=["search_vector"], name="version_search_gin")]
         constraints = [
             models.UniqueConstraint(fields=["document", "number"], name="version_number_once"),
@@ -167,6 +186,9 @@ class DocumentVersion(models.Model):
 class AuditLogQuerySet(models.QuerySet):
     def visible_to(self, attorney):
         """Hide entries about matters (and their documents) this attorney is walled off from."""
+        # Checked per row on purpose: audit pages read about 50 rows, so a per-row lookup
+        # beats building the set of walled-off documents first (measured both ways;
+        # search, which filters thousands of rows, uses the set).
         return self.exclude(document__matter__blocks__attorney=attorney).exclude(
             matter__blocks__attorney=attorney
         )
@@ -203,6 +225,7 @@ class AuditLog(models.Model):
     class Meta:
         default_manager_name = "objects"
         indexes = [
+            models.Index(fields=["firm", "-created_at"], name="audit_firm_created"),
             models.Index(fields=["firm", "document", "-created_at"], name="audit_firm_doc_created"),
             models.Index(
                 fields=["firm", "matter", "-created_at"], name="audit_firm_matter_created"

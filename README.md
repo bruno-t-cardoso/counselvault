@@ -1,71 +1,129 @@
 # CounselVault
 
 A multi-tenant document API for law firms, built with Python 3.12, Django REST Framework and PostgreSQL 16.
-Personal project, work in progress.
+Personal project. It runs locally and in CI; it has not been deployed.
 
-The focus is tenant isolation, a secure file lifecycle and permission-aware search: one firm must never see another firm's data, and inside a firm an
-attorney can be walled off from a specific matter (an "ethical wall").
+The focus is tenant isolation, a secure file lifecycle, permission-aware search, and PostgreSQL done
+carefully: one firm must never see another firm's data, and inside a firm an attorney can be walled off
+from a specific matter (an "ethical wall").
 
 ## What is implemented
 
-- **Two independent isolation layers.**
-  - `TenantManager` (`vault/tenancy.py`) filters every ORM query by the current firm.
-  - PostgreSQL row-level security policies (`vault/migrations/0002_row_level_security.py`) compare each
-    row's `firm_id` with the `app.current_firm_id` session setting. Queries that skip the manager, and raw
-    SQL, are still confined to the firm. `FORCE ROW LEVEL SECURITY` makes the policy apply to the table owner.
-  - Both layers fail closed: with no tenant set, queries return no rows.
-- **Non-superuser database role.** Superusers bypass row-level security, so the app connects as a plain
-  role (`docker/initdb.sql`), and a test asserts this.
-- **Ethical walls.** A `MatterBlock` hides a matter and its documents from one attorney in the same firm.
-- **404, not 403.** Another firm's matter, or a walled-off one, is indistinguishable from one that does not exist.
-- **Indexes.** A composite index on `(firm, client, created_at desc)` for matters, a partial index covering
-  only active matters, and `(firm, matter, created_at desc)` for documents.
-- **Direct-to-S3 file transfer.** The API issues presigned URLs that expire after 5 minutes
-  (`vault/storage.py`), so file bytes never pass through the web workers. Permissions are checked before
-  any URL is issued.
-- **Document versioning.** Each upload becomes a new S3 object version. The API records it as version 1,
-  2, 3... and can issue a download URL for any past version; nothing is overwritten.
-- **Append-only audit log.** Document creation, every presigned URL issued and every recorded version are
-  written to `vault_auditlog`. Database triggers (`vault/migrations/0004_rls_and_audit_triggers.py`)
-  reject `UPDATE`, `DELETE` and `TRUNCATE`. The log is tenant-isolated and respects ethical walls.
+**Tenant isolation**
+
+- **Two independent layers.** `TenantManager` (`vault/tenancy.py`) filters every ORM query by the current
+  firm, and PostgreSQL row-level security policies enforce the same rule in the database, so queries that
+  skip the manager, and raw SQL, are still confined to the firm. With no tenant set, both return nothing.
+- **Transaction-scoped tenant.** Each request runs in one transaction with the firm set by `SET LOCAL`,
+  so the setting cannot leak to the next user of a pooled connection. An error response rolls back
+  everything the request wrote.
+- **Separate database roles.** Migrations run as an owner role. The API and worker connect as an
+  application role that owns nothing: it cannot alter tables, drop policies or triggers, or truncate.
+  Neither role is a superuser.
+- **Ethical walls.** A firm admin can wall an attorney off from a matter through the API. The matter, its
+  documents, their files, search results and audit entries all disappear for that attorney.
+- **404, not 403.** Another firm's matter, or a walled-off one, is indistinguishable from one that does
+  not exist.
+
+**Files**
+
+- **Direct-to-S3 transfer.** The API checks permissions, then issues a signed upload or download that
+  expires after 5 minutes. File bytes never pass through the web workers.
+- **Upload limits.** The signed upload policy fixes the content type (PDF or plain text) and a 25 MB
+  maximum, which S3 enforces. The API checks both again before it records a version.
+- **Versioning.** Each upload becomes a new S3 object version, recorded as version 1, 2, 3... Any past
+  version can be downloaded; nothing is overwritten.
+- **Encryption at rest.** The bucket encrypts every object with a KMS key by default.
+
+**Audit log**
+
+- **What is recorded.** Document creation, every signed URL issued, every recorded version, and every
+  ethical wall added or removed, each with the attorney who did it.
+- **Append-only, twice.** The application role has no UPDATE or DELETE privilege on the table, and
+  triggers reject UPDATE, DELETE and TRUNCATE even for the owner role.
+- **Partitioned by month.** `manage.py ensure_audit_partitions` creates future months ahead of time. The
+  application role can only reach the log through the parent table, where row-level security applies.
+
+**Search**
+
 - **Background processing.** S3 publishes an event to SQS for every upload. A worker
-  (`vault/pipeline.py`, `manage.py consume_uploads`) extracts text from PDFs and text files, and flags
-  versions containing something that looks like a US Social Security number as needing redaction.
-  The worker takes the tenant from the object key and runs under the same row-level security.
-  Events it cannot handle yet are retried; events that keep failing move to a dead-letter queue.
-- **Full-text search.** Extracted text is indexed in a `tsvector` column with a GIN index, with title
-  matches weighted above body matches. `/api/search/?q=` ranks results, searches only the latest version
-  of each document, never returns another firm's or a walled-off matter's documents, and withholds the
-  text snippet for versions flagged for redaction.
-- **Encryption at rest.** The bucket encrypts every object with a KMS key by default, so presigned
-  uploads need no encryption headers. A test checks that stored objects come back as `aws:kms`.
-- **Infrastructure as code.** `infra/terraform` defines the KMS key (rotation on), the private, versioned,
-  TLS-only bucket, the upload queue with its dead-letter queue, the S3-to-SQS notification, and a
-  least-privilege IAM policy for the app. `vault/localaws.py` mirrors it for local development.
-- **REST API.**
-  - `/api/matters/` and `/api/documents/`: list, retrieve, create
-  - `/api/documents/{id}/upload-url/`, `/versions/`, `/download-url/`: the file lifecycle
-  - `/api/audit-log/`: read-only, filterable by document
-  - `/api/search/?q=`: full-text search
+  (`vault/pipeline.py`) extracts text from PDFs and text files and flags versions containing something
+  that looks like a US Social Security number. Events it cannot handle yet are retried; events that keep
+  failing move to a dead-letter queue.
+- **Full-text search.** `/api/search/?q=` ranks matches (title above body), searches only the latest
+  version of each document, respects firms and ethical walls, and withholds the text snippet for versions
+  flagged for redaction.
+
+**API and operations**
+
+- **Token authentication** with a rate-limited login endpoint, and **cursor pagination** on list endpoints.
+- **Read replica routing.** Search and the audit log listing can read from a streaming replica; everything
+  else stays on the primary (`vault/routing.py`).
+- **Infrastructure as code.** `infra/terraform` defines the KMS key, the private, versioned, TLS-only
+  bucket, the upload queue with its dead-letter queue, the S3-to-SQS notification, and a least-privilege
+  IAM policy. `vault/localaws.py` mirrors it for local development.
+- **CI** (`.github/workflows/ci.yml`) runs the linter, a missing-migration check, the tests, and
+  `terraform validate`.
+
+## Endpoints
+
+| Endpoint | Purpose |
+|---|---|
+| `POST /api/auth/token/` | Exchange username and password for a token |
+| `/api/matters/`, `/api/documents/` | List, retrieve, create |
+| `/api/matters/{id}/walls/`, `/walls/{attorney}/` | List, add, remove ethical walls (firm admins) |
+| `/api/documents/{id}/upload-url/`, `/versions/`, `/download-url/` | File lifecycle |
+| `GET /api/audit-log/` | Read-only; filter by `document` or `matter` |
+| `GET /api/search/?q=` | Full-text search |
+
+## Measured query plans
+
+[`docs/query-plans.md`](docs/query-plans.md) is generated by `manage.py benchmark_queries`. It runs the
+ORM queries the API actually uses, for one firm under row-level security, on generated data: 40 firms,
+200,000 matters, 400,000 documents and versions, 1.2 million audit rows. The data is synthetic and the
+machine was a laptop running Docker, so read the numbers as relative.
+
+What the measurements changed:
+
+- **Added three indexes on `(firm, created_at DESC)`** for the matter, document and audit lists. First
+  pages went from 1 to 11 ms down to under 0.2 ms (roughly 19x to 65x).
+- **Removed two indexes that did not help.** The original composite and partial indexes for "a client's
+  active matters" made no measurable difference: the foreign-key index already answers that in about
+  0.02 ms.
+- **Found that the full-text GIN index is not used.** Under row-level security PostgreSQL only uses an
+  operator as an index condition if it is marked leakproof, and the text-match operator is not. The
+  planner reads the firm's rows through the `firm_id` index and filters them. Marking the function
+  leakproof as a superuser made the planner use the index, but that is not possible on every managed
+  Postgres and is a security decision, so it is not done here. Search cost therefore grows with the
+  number of documents in a firm.
+- **Rewrote the ethical-wall filter for search.** It was re-checked per candidate row and was more than
+  half of the search time. As a set evaluated once, and with the document join moved out of the query,
+  search went from about 9.7 ms to about 4 to 5 ms at 10,000 documents in the firm. Audit pages kept the
+  per-row check, which is faster when only a page of rows is read.
+- **Confirmed partition pruning.** A date-bounded audit query skips every earlier month.
 
 ## What is not implemented yet
 
 - **Not deployed.** The Terraform passes `terraform validate` but has never been applied to an AWS
   account, and the tests use a local S3/SQS/KMS stand-in ([moto](https://github.com/getmoto/moto) server).
-- Auditing of permission changes: ethical walls can only be created in code so far, not through the API
-- Query-plan measurements (`EXPLAIN ANALYZE`) on realistic data volumes, and read replicas
-- Token authentication and pagination
-- A separate database role for the app that does not own the tables (see design notes)
+  The stand-in may not enforce the signed upload policy's size and type conditions; real S3 does.
+- **Search does not use its index** under row-level security (see above).
+- Tokens do not expire, and there is no endpoint to manage users or attorneys
 - Redaction itself: flagged versions are only marked, and only one pattern is detected
 - Scanned PDFs: there is no OCR, so image-only PDFs produce no searchable text
+- An oversized or wrong-type object that reaches the bucket is refused as a version but not deleted
+- Database infrastructure (RDS, replica, connection pooler) is not in the Terraform
 
 ## Run it
 
 ```bash
-docker compose up -d db
-docker compose run --rm app python manage.py migrate
+docker compose up -d db s3
+docker compose run --rm app python manage.py migrate --database owner
 docker compose run --rm app pytest -q
 ```
+
+Migrations always run with `--database owner`; the default connection is the application role, which is
+not allowed to change the schema.
 
 To use the API locally with the worker running:
 
@@ -73,34 +131,58 @@ To use the API locally with the worker running:
 docker compose up
 ```
 
-Lint with `docker compose run --rm app ruff check .`. CI (`.github/workflows/ci.yml`) runs the linter,
-a missing-migration check, the tests, and `terraform validate`.
+To also run a streaming read replica:
 
-The tests run against a real PostgreSQL instance, because the row-level security policies are part of what
-is being tested, and against the local AWS stand-in with the bucket and queue configured as in Terraform.
+```bash
+DB_REPLICA_HOST=replica docker compose --profile replica up
+```
+
+Other commands, each run with `docker compose run --rm app ...`:
+
+| Command | What it does |
+|---|---|
+| `ruff check .` | Lint |
+| `python manage.py ensure_audit_partitions` | Create the next months' audit partitions |
+| `python manage.py benchmark_queries` | Regenerate `docs/query-plans.md` (rolls back its data) |
+
+## Tests
+
+The tests run against a real PostgreSQL instance, as the application role, because the row-level security
+policies and role privileges are part of what is being tested. They also run against the local AWS
+stand-in with the bucket and queue configured as in Terraform.
 
 | Test file | Covers |
 |---|---|
-| `tests/test_database_isolation.py` | Manager and row-level security |
+| `tests/test_database_isolation.py` | Manager, row-level security, role privileges, tenant scoping |
 | `tests/test_api_isolation.py` | Cross-firm access and ethical walls over HTTP |
-| `tests/test_file_lifecycle.py` | Presigned upload and download, versioning |
-| `tests/test_audit_log.py` | What is recorded, who can read it, immutability |
+| `tests/test_ethical_walls_api.py` | Managing walls: admin only, same firm only, audited |
+| `tests/test_file_lifecycle.py` | Signed upload and download, versioning, upload limits |
+| `tests/test_audit_log.py` | What is recorded, who can read it, immutability for both roles |
+| `tests/test_audit_partitions.py` | Monthly partitions, pruning, no direct partition access |
 | `tests/test_pipeline.py` | Upload events, text extraction, redaction flag, retries |
 | `tests/test_search.py` | Relevance and permission scoping of search |
+| `tests/test_auth_and_pagination.py` | Token login, rate limiting, cursor pagination |
+| `tests/test_replica_routing.py` | Which reads may go to a replica |
 | `tests/test_infrastructure_parity.py` | Encryption at rest and the dead-letter queue |
+
+The replica itself is not part of the automated tests. It was checked by hand against the local streaming
+replica: search and the audit listing ran on a connection reporting `pg_is_in_recovery() = true`, while
+the matter list stayed on the primary.
 
 ## Design notes
 
-- Upload is two steps: get a presigned URL and upload, then tell the API to record the version. The API
-  reads the object's S3 version ID at that point. If two uploads land before either is recorded, only
-  the newer one gets a version number.
-- Real S3 puts the object's version ID in each event. The local stand-in leaves it out, so the worker
-  falls back to the newest stored version when it is missing.
-- The audit triggers stop the application from rewriting history, but the table owner could still drop
-  them. In production the app should connect as a role that does not own the tables.
-
-- The tenant is set per request in `TenantScopedMixin` (`vault/views.py`) after authentication and cleared
-  when the request ends. It is a session-level setting that is always reset; behind a transaction-pooling
-  proxy such as PgBouncer this would need to become a transaction-local setting.
-- Foreign-key checks in PostgreSQL bypass row-level security, so cross-firm references are also rejected in
-  the serializers, whose related-field querysets are tenant-scoped.
+- **Upload is two steps:** get a signed upload and send the file, then tell the API to record the version.
+  The API reads the object's S3 version ID at that point. If two uploads land before either is recorded,
+  only the newer one gets a version number.
+- **Version IDs in events:** real S3 puts the object's version ID in each event. The local stand-in leaves
+  it out, so the worker falls back to the newest stored version when it is missing.
+- **Foreign keys and row-level security:** PostgreSQL's foreign-key checks bypass row-level security, so
+  cross-firm references are also rejected in the serializers, whose related-field querysets are
+  tenant-scoped.
+- **The worker's tenant:** the worker has no logged-in user. It takes the firm from the object key and
+  runs each event inside that firm's tenant context, so row-level security applies to it too.
+- **Replica lag:** only endpoints that tolerate slightly stale results read from the replica. Lists a
+  client may read straight after writing stay on the primary.
+- **Audit partitions:** a default partition catches any row whose month has no partition, so an insert
+  never fails. It should stay empty; creating a month's partition fails if the default already holds rows
+  for that month.

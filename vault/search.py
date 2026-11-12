@@ -4,11 +4,37 @@ from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .models import DocumentVersion
+from .models import Document, DocumentVersion, walled_off_document_ids
 from .pipeline import SEARCH_CONFIG
 from .views import TenantScopedMixin
 
 MAX_RESULTS = 50
+
+
+def search_versions(attorney, terms):
+    """Latest document versions matching the terms that this attorney may see, best first."""
+    query = SearchQuery(terms, config=SEARCH_CONFIG, search_type="websearch")
+    latest_number = (
+        DocumentVersion.objects.filter(document=OuterRef("document"))
+        .order_by("-number")
+        .values("number")[:1]
+    )
+    return (
+        DocumentVersion.objects.filter(search_vector=query)
+        .exclude(document_id__in=walled_off_document_ids(attorney))  # ethical walls
+        .annotate(latest_number=Subquery(latest_number))
+        .filter(number=F("latest_number"))
+        .annotate(
+            rank=SearchRank(F("search_vector"), query),
+            snippet=SearchHeadline(
+                "extracted_text", query, config=SEARCH_CONFIG, max_words=25, min_words=10
+            ),
+        )
+        # No join to the document here. Touching only this table leaves the planner one
+        # sensible plan; with the join it sometimes started from the firm's documents and
+        # ran 4x slower (docs/query-plans.md). Titles are fetched for the final page only.
+        .order_by("-rank", "-created_at")[:MAX_RESULTS]
+    )
 
 
 class SearchView(TenantScopedMixin, APIView):
@@ -20,32 +46,14 @@ class SearchView(TenantScopedMixin, APIView):
         terms = request.query_params.get("q", "").strip()
         if not terms:
             raise ValidationError({"q": "Enter something to search for."})
-        query = SearchQuery(terms, config=SEARCH_CONFIG, search_type="websearch")
-        latest_number = (
-            DocumentVersion.objects.filter(document=OuterRef("document"))
-            .order_by("-number")
-            .values("number")[:1]
-        )
-        hits = (
-            DocumentVersion.objects.filter(search_vector=query)  # uses the GIN index
-            .exclude(document__matter__blocks__attorney=request.user.attorney)  # ethical walls
-            .annotate(latest_number=Subquery(latest_number))
-            .filter(number=F("latest_number"))
-            .annotate(
-                rank=SearchRank(F("search_vector"), query),
-                snippet=SearchHeadline(
-                    "extracted_text", query, config=SEARCH_CONFIG, max_words=25, min_words=10
-                ),
-            )
-            .select_related("document")
-            .order_by("-rank", "-created_at")[:MAX_RESULTS]
-        )
+        hits = list(search_versions(request.user.attorney, terms))
+        documents = Document.objects.in_bulk([hit.document_id for hit in hits])
         return Response(
             [
                 {
                     "document": hit.document_id,
-                    "title": hit.document.title,
-                    "matter": hit.document.matter_id,
+                    "title": documents[hit.document_id].title,
+                    "matter": documents[hit.document_id].matter_id,
                     "version": hit.number,
                     "rank": round(hit.rank, 4),
                     "needs_redaction": hit.needs_redaction,
