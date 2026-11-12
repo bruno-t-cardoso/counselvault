@@ -1,4 +1,5 @@
 """Isolation as seen through the HTTP API."""
+
 from vault.models import Document, Matter, MatterBlock
 from vault.tenancy import tenant_context
 

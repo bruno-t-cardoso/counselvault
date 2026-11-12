@@ -135,9 +135,7 @@ class DocumentViewSet(_ReadCreateViewSet):
         version = versions.filter(number=number).first() if number else versions.last()
         if version is None:
             raise NotFound("No such version.")
-        audit.record(
-            request, AuditLog.Action.DOWNLOAD_URL_ISSUED, document, version=version.number
-        )
+        audit.record(request, AuditLog.Action.DOWNLOAD_URL_ISSUED, document, version=version.number)
         return Response(
             {
                 "url": storage.presign_download(version.s3_key, version.s3_version_id),

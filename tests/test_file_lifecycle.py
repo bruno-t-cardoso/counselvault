@@ -1,4 +1,5 @@
 """Upload and download through presigned URLs, with S3 object versioning."""
+
 import urllib.request
 
 from vault.models import MatterBlock
@@ -56,7 +57,10 @@ def test_new_upload_adds_a_version_and_keeps_the_old_one(api, firm_a):
     assert _download(client, firm_a.document, version=1) == b"first draft"
 
     listed = client.get(f"/api/documents/{firm_a.document.pk}/versions/").json()
-    assert [(v["number"], v["uploaded_by"]) for v in listed] == [(1, "alpha-lead"), (2, "alpha-lead")]
+    assert [(v["number"], v["uploaded_by"]) for v in listed] == [
+        (1, "alpha-lead"),
+        (2, "alpha-lead"),
+    ]
 
 
 def test_cannot_record_a_version_without_uploading(api, firm_a):

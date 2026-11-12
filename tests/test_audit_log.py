@@ -1,4 +1,5 @@
 """The audit trail: what gets recorded, who can read it, and that it cannot be altered."""
+
 import urllib.request
 
 import pytest

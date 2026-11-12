@@ -21,6 +21,7 @@ services:
     volumes:
       - .:/app
     environment: &app_env
+      DJANGO_DEBUG: "1"
       DB_HOST: db
       S3_ENDPOINT_URL: http://s3:5000
       S3_BUCKET: counselvault-dev

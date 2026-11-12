@@ -9,6 +9,7 @@ Two independent layers enforce isolation:
 
 Both layers fail closed: with no tenant set, queries return no rows.
 """
+
 from contextlib import contextmanager
 from contextvars import ContextVar
 

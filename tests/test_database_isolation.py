@@ -1,4 +1,5 @@
 """Isolation enforced below the API: the ORM manager and Postgres row-level security."""
+
 import pytest
 from django.db import DatabaseError, connection, transaction
 

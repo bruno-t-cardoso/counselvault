@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 2s --health-timeout 3s --health-retries 30
+      s3:
+        image: motoserver/moto
+        ports: ["5000:5000"]
+    env:
+      DJANGO_DEBUG: "1"
+      DB_HOST: localhost
+      S3_ENDPOINT_URL: http://localhost:5000
+      AWS_ACCESS_KEY_ID: local
+      AWS_SECRET_ACCESS_KEY: local
+      AWS_DEFAULT_REGION: us-east-1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Lint
+        run: |
+          ruff check .
+          ruff format --check .
+      - name: Create the non-superuser database role
+        run: psql -h localhost -U postgres -v ON_ERROR_STOP=1 -f docker/initdb.sql
+        env:
+          PGPASSWORD: postgres
+      - name: No model changes without a migration
+        run: python manage.py makemigrations --check --dry-run
+      - name: Tests
+        run: pytest -q
+
+  terraform:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: infra/terraform
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.8"
+      - run: terraform fmt -check -recursive
+      - run: terraform init -backend=false -input=false
+      - run: terraform validate

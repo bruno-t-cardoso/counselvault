@@ -22,9 +22,7 @@ class DocumentSerializer(serializers.ModelSerializer):
         attorney = self.context["request"].user.attorney
         if matter.blocks.filter(attorney=attorney).exists():
             # Same message as a matter that does not exist: do not confirm it is there.
-            raise serializers.ValidationError(
-                f'Invalid pk "{matter.pk}" - object does not exist.'
-            )
+            raise serializers.ValidationError(f'Invalid pk "{matter.pk}" - object does not exist.')
         return matter
 
 

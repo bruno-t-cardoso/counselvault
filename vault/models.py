@@ -117,9 +117,7 @@ class Document(models.Model):
     class Meta:
         default_manager_name = "objects"
         indexes = [
-            models.Index(
-                fields=["firm", "matter", "-created_at"], name="doc_firm_matter_created"
-            ),
+            models.Index(fields=["firm", "matter", "-created_at"], name="doc_firm_matter_created"),
         ]
 
 

@@ -1,0 +1,13 @@
+line-length = 100
+target-version = "py312"
+extend-exclude = ["vault/migrations/0001_initial.py", "vault/migrations/0003_*.py", "vault/migrations/0005_*.py"]
+
+[lint]
+select = ["E", "F", "I", "B", "UP", "S", "DJ"]
+ignore = [
+    "DJ008",  # __str__ on every model: not needed for an API-only project
+    "DJ012",  # misreads a second manager as a field declared out of order
+]
+
+[lint.per-file-ignores]
+"tests/*" = ["S101", "S106", "S310"]  # asserts, test passwords, urlopen on local URLs

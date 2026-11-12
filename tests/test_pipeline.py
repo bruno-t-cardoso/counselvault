@@ -1,4 +1,7 @@
 """Upload events flow S3 -> SQS -> worker: text extraction and the redaction check."""
+
+import json
+
 from vault import pipeline
 from vault.models import DocumentVersion
 from vault.tenancy import tenant_context
@@ -70,9 +73,12 @@ def test_duplicate_delivery_does_not_reprocess(api, firm_a, upload, monkeypatch)
     upload(api(firm_a.attorney), firm_a.document, b"once")
     pipeline.drain()
     version = _version(firm_a)
-    event = (
-        '{"Records": [{"s3": {"object": {"key": "%s", "versionId": "%s"}}}]}'
-        % (version.s3_key, version.s3_version_id)
+    event = json.dumps(
+        {
+            "Records": [
+                {"s3": {"object": {"key": version.s3_key, "versionId": version.s3_version_id}}}
+            ]
+        }
     )
     monkeypatch.setattr(pipeline, "process_version", lambda v: 1 / 0)  # must not be called
     assert pipeline.handle_event(event) is True
@@ -80,9 +86,12 @@ def test_duplicate_delivery_does_not_reprocess(api, firm_a, upload, monkeypatch)
 
 def test_unrelated_and_test_events_are_acknowledged(db):
     assert pipeline.handle_event('{"Event": "s3:TestEvent"}') is True
-    assert pipeline.handle_event(
-        '{"Records": [{"s3": {"object": {"key": "somewhere/else.txt", "versionId": "v"}}}]}'
-    ) is True
+    assert (
+        pipeline.handle_event(
+            '{"Records": [{"s3": {"object": {"key": "somewhere/else.txt", "versionId": "v"}}}]}'
+        )
+        is True
+    )
 
 
 def test_worker_only_touches_the_firm_named_in_the_key(api, firm_a, firm_b, upload):

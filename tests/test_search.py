@@ -1,4 +1,5 @@
 """Full-text search: relevance, and that it never reaches past the caller's permissions."""
+
 from vault import pipeline
 from vault.models import Document, MatterBlock
 from vault.tenancy import tenant_context

@@ -9,6 +9,7 @@ The worker has no logged-in user, so it takes the tenant from the object key
 (``firms/<firm_id>/documents/<document_id>``) and runs each event inside that
 firm's tenant context. Row-level security therefore applies to the worker too.
 """
+
 import io
 import json
 import logging

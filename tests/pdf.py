@@ -18,5 +18,8 @@ def make_pdf(text: str) -> bytes:
     out += b"xref\n0 %d\n0000000000 65535 f \n" % (len(objects) + 1)
     for offset in offsets:
         out += b"%010d 00000 n \n" % offset
-    out += b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (len(objects) + 1, xref)
+    out += b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (
+        len(objects) + 1,
+        xref,
+    )
     return bytes(out)

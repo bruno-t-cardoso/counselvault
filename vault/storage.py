@@ -5,8 +5,8 @@ presigned URLs and the client talks to S3 directly. The bucket must have
 versioning enabled, so every upload to a document's key becomes a new,
 individually addressable S3 object version.
 """
+
 from dataclasses import dataclass
-from typing import Optional
 
 import boto3
 from botocore.client import Config
@@ -64,7 +64,7 @@ def presign_download(key: str, version_id: str) -> str:
     )
 
 
-def head_latest(key: str) -> Optional[StoredObject]:
+def head_latest(key: str) -> StoredObject | None:
     """The newest stored version of a key, or None if nothing was uploaded."""
     try:
         response = client().head_object(Bucket=settings.S3_BUCKET, Key=key)

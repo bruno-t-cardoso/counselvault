@@ -1,12 +1,30 @@
 import os
 from pathlib import Path
 
+from django.core.exceptions import ImproperlyConfigured
+
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-# Development defaults only; override through the environment anywhere else.
-SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY", "dev-only-not-a-secret")
-DEBUG = os.environ.get("DJANGO_DEBUG", "1") == "1"
-ALLOWED_HOSTS = ["*"] if DEBUG else os.environ.get("ALLOWED_HOSTS", "").split(",")
+DEBUG = os.environ.get("DJANGO_DEBUG", "0") == "1"
+
+if DEBUG:
+    SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY", "dev-only-not-a-secret")
+    ALLOWED_HOSTS = ["*"]
+else:
+    # Outside local development nothing falls back to a default.
+    try:
+        SECRET_KEY = os.environ["DJANGO_SECRET_KEY"]
+        ALLOWED_HOSTS = os.environ["DJANGO_ALLOWED_HOSTS"].split(",")
+    except KeyError as missing:
+        raise ImproperlyConfigured(
+            f"{missing.args[0]} must be set when DJANGO_DEBUG is not 1"
+        ) from None
+    SECURE_SSL_REDIRECT = True
+    SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+    SECURE_HSTS_SECONDS = 31536000
+    SECURE_HSTS_INCLUDE_SUBDOMAINS = True
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True
 
 INSTALLED_APPS = [
     "django.contrib.auth",
@@ -36,6 +54,8 @@ DATABASES = {
         "PASSWORD": os.environ.get("DB_PASSWORD", "counselvault"),
         "HOST": os.environ.get("DB_HOST", "localhost"),
         "PORT": os.environ.get("DB_PORT", "5432"),
+        "CONN_MAX_AGE": 60,
+        "CONN_HEALTH_CHECKS": True,
     }
 }
 
@@ -45,6 +65,8 @@ REST_FRAMEWORK = {
         "rest_framework.authentication.BasicAuthentication",
     ],
     "DEFAULT_PERMISSION_CLASSES": ["rest_framework.permissions.IsAuthenticated"],
+    "DEFAULT_THROTTLE_CLASSES": ["rest_framework.throttling.UserRateThrottle"],
+    "DEFAULT_THROTTLE_RATES": {"user": "600/min"},
 }
 
 # Object storage. Credentials and region come from the standard AWS environment
@@ -63,3 +85,10 @@ TEXT_EXTRACTION_MAX_BYTES = 20 * 1024 * 1024
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 USE_TZ = True
+
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "handlers": {"console": {"class": "logging.StreamHandler"}},
+    "root": {"handlers": ["console"], "level": os.environ.get("LOG_LEVEL", "INFO")},
+}
