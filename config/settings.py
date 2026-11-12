@@ -45,18 +45,33 @@ MIDDLEWARE = [
 
 ROOT_URLCONF = "config.urls"
 
-DATABASES = {
-    "default": {
+
+def _database(user, password, **extra):
+    return {
         "ENGINE": "django.db.backends.postgresql",
         "NAME": os.environ.get("DB_NAME", "counselvault"),
-        # Must be a non-superuser: superusers bypass row-level security.
-        "USER": os.environ.get("DB_USER", "counselvault"),
-        "PASSWORD": os.environ.get("DB_PASSWORD", "counselvault"),
+        "USER": user,
+        "PASSWORD": password,
         "HOST": os.environ.get("DB_HOST", "localhost"),
         "PORT": os.environ.get("DB_PORT", "5432"),
         "CONN_MAX_AGE": 60,
         "CONN_HEALTH_CHECKS": True,
+        **extra,
     }
+
+
+# The API and worker connect as DB_APP_USER, which does not own the tables and so
+# cannot alter the schema, the row-level security policies or the audit triggers.
+# Migrations run as the owner: `manage.py migrate --database owner`.
+DB_APP_USER = os.environ.get("DB_APP_USER", "counselvault_app")
+DB_OWNER_USER = os.environ.get("DB_OWNER_USER", "counselvault_owner")
+DATABASES = {
+    "default": _database(DB_APP_USER, os.environ.get("DB_APP_PASSWORD", "app-dev-password")),
+    "owner": _database(
+        DB_OWNER_USER,
+        os.environ.get("DB_OWNER_PASSWORD", "owner-dev-password"),
+        TEST={"MIRROR": "default"},  # same database, different role
+    ),
 }
 
 REST_FRAMEWORK = {

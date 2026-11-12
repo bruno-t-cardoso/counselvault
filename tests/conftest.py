@@ -1,3 +1,4 @@
+import os
 from types import SimpleNamespace
 
 import pytest
@@ -6,6 +7,36 @@ from rest_framework.test import APIClient
 
 from vault.models import Attorney, Client, Document, Firm, Matter
 from vault.tenancy import tenant_context
+
+
+@pytest.fixture(scope="session")
+def django_db_modify_db_settings():
+    """Create the test database and run migrations as the owner role..."""
+    from django.conf import settings
+
+    settings.DATABASES["default"].update(
+        USER=settings.DATABASES["owner"]["USER"], PASSWORD=settings.DATABASES["owner"]["PASSWORD"]
+    )
+
+
+@pytest.fixture(scope="session")
+def django_db_setup(django_db_setup, django_db_blocker):
+    """...then run every test as the application role, as production does."""
+    from django.conf import settings
+    from django.db import connections
+
+    default = connections["default"]
+    owner_credentials = (default.settings_dict["USER"], default.settings_dict["PASSWORD"])
+    with django_db_blocker.unblock():
+        default.close()
+    default.settings_dict.update(
+        USER=settings.DB_APP_USER,
+        PASSWORD=os.environ.get("DB_APP_PASSWORD", "app-dev-password"),
+    )
+    yield
+    with django_db_blocker.unblock():
+        connections.close_all()  # nothing may hold the test database open at teardown
+    default.settings_dict.update(USER=owner_credentials[0], PASSWORD=owner_credentials[1])
 
 
 def _attorney(username, firm):

@@ -3,9 +3,10 @@
 import urllib.request
 
 import pytest
-from django.db import DatabaseError, connection, transaction
+from django.contrib.auth import get_user_model
+from django.db import DatabaseError, connection, connections, transaction
 
-from vault.models import AuditLog, MatterBlock
+from vault.models import Attorney, AuditLog, Client, Document, Firm, Matter, MatterBlock
 from vault.tenancy import tenant_context
 
 
@@ -50,28 +51,56 @@ def test_refused_requests_leave_no_audit_rows(api, firm_a, firm_b):
     assert _actions(firm_b.firm) == []
 
 
-def test_audit_rows_cannot_be_updated(api, firm_a):
+def test_app_role_cannot_update_audit_rows(api, firm_a):
     _full_cycle(api(firm_a.attorney), firm_a.document)
     with tenant_context(firm_a.firm.id):
-        with pytest.raises(DatabaseError, match="append-only"), transaction.atomic():
+        with pytest.raises(DatabaseError, match="permission denied"), transaction.atomic():
             AuditLog.objects.update(action="document_created")
         assert AuditLog.objects.filter(action="document_created").count() == 0
 
 
-def test_audit_rows_cannot_be_deleted(api, firm_a):
+def test_app_role_cannot_delete_or_truncate_audit_rows(api, firm_a):
     _full_cycle(api(firm_a.attorney), firm_a.document)
     with tenant_context(firm_a.firm.id):
-        with pytest.raises(DatabaseError, match="append-only"), transaction.atomic():
-            AuditLog.objects.all().delete()
-        with pytest.raises(DatabaseError, match="append-only"), transaction.atomic():
-            with connection.cursor() as cursor:
-                cursor.execute("DELETE FROM vault_auditlog")
+        for statement in ("DELETE FROM vault_auditlog", "TRUNCATE vault_auditlog"):
+            with pytest.raises(DatabaseError, match="permission denied"), transaction.atomic():
+                with connection.cursor() as cursor:
+                    cursor.execute(statement)
         assert AuditLog.objects.count() == 3
 
 
-def test_audit_table_cannot_be_truncated(db):
-    with pytest.raises(DatabaseError, match="append-only"), transaction.atomic():
-        with connection.cursor() as cursor:
+@pytest.mark.django_db(databases=["default", "owner"])
+def test_even_the_table_owner_is_stopped_by_the_triggers():
+    """Second layer: the owner role has UPDATE and DELETE rights, and still cannot use them."""
+    owner = connections["owner"]
+    with owner.cursor() as cursor:
+        cursor.execute("SELECT current_user")
+        assert cursor.fetchone()[0] == "counselvault_owner"
+
+    firm = Firm.objects.using("owner").create(name="omega")
+    user = get_user_model().objects.db_manager("owner").create_user("omega-lead")
+    attorney = Attorney.objects.using("owner").create(user=user, firm=firm)
+    with tenant_context(firm.id, using=("owner",)):
+        client = Client.unscoped.using("owner").create(firm=firm, name="c")
+        matter = Matter.unscoped.using("owner").create(firm=firm, client=client, title="m")
+        document = Document.unscoped.using("owner").create(firm=firm, matter=matter, title="d")
+        AuditLog.unscoped.using("owner").create(
+            firm=firm, actor=attorney, action="document_created", document=document
+        )
+        for statement in (
+            "UPDATE vault_auditlog SET action = 'rewritten'",
+            "DELETE FROM vault_auditlog",
+        ):
+            with pytest.raises(DatabaseError, match="append-only"):
+                with transaction.atomic(using="owner"), owner.cursor() as cursor:
+                    cursor.execute(statement)
+        assert AuditLog.unscoped.using("owner").get().action == "document_created"
+
+
+@pytest.mark.django_db(databases=["default", "owner"])
+def test_even_the_table_owner_cannot_truncate_the_audit_log():
+    with pytest.raises(DatabaseError, match="append-only"):
+        with transaction.atomic(using="owner"), connections["owner"].cursor() as cursor:
             cursor.execute("TRUNCATE vault_auditlog")
 
 

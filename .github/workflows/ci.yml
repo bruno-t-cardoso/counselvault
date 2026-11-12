@@ -41,7 +41,7 @@ jobs:
         run: |
           ruff check .
           ruff format --check .
-      - name: Create the non-superuser database role
+      - name: Create the owner and app database roles
         run: psql -h localhost -U postgres -v ON_ERROR_STOP=1 -f docker/initdb.sql
         env:
           PGPASSWORD: postgres

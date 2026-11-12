@@ -23,7 +23,11 @@ class IsAttorney(permissions.BasePermission):
 
 
 class TenantScopedMixin:
-    """Enter the caller's firm after authentication, leave it when the request ends."""
+    """Run each request as the caller's firm, inside one database transaction.
+
+    The tenant is entered after authentication and left when the request ends.
+    A request that ends in an error response rolls back everything it wrote.
+    """
 
     permission_classes = [permissions.IsAuthenticated, IsAttorney]
 
@@ -31,6 +35,12 @@ class TenantScopedMixin:
         super().initial(request, *args, **kwargs)  # authentication + permissions
         self._tenant = tenant_context(request.user.attorney.firm_id)
         self._tenant.__enter__()
+
+    def handle_exception(self, exc):
+        response = super().handle_exception(exc)
+        if getattr(self, "_tenant", None) is not None:
+            transaction.set_rollback(True)
+        return response
 
     def dispatch(self, request, *args, **kwargs):
         try:
